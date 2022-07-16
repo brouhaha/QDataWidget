@@ -55,88 +55,85 @@ class QDataField:
         return obj.__dict__[self.name]
 
     def __set__(self, obj, value):
+        # This is a horrible hack because QLineEdit, and even our
+        # GenericEdit, always emit strings
+        if self.data_type == float:
+            value = float(value)
+        elif self.data_type == int:
+            value = int(value)
+
         if self.name in obj.__dict__ and value == obj.__dict__[self.name]:
             return
         obj.__dict__[self.name] = value
         getattr(obj, self.signal_name).emit(value)
 
-class QDataWidget(qtc.QObject):
+
+class GenericEdit(qtw.QLineEdit):
+    def setText(self, value):
+        if type(value) != str:
+            value = str(value)
+        super().setText(value)
+
+
+class QDataWidget(qtw.QWidget):
     """Don't instantiate this class directly. A subclass must define
        one or more class attribute initialized to QDataField instances"""
 
     def __init__(self, *args, **kwargs):
+        # Pull our field initializers out of kwargs into field_init.
+        # Do this _before_ calling superclass init, because we don't want
+        # to forward the keyword arguments we consume
         field_init = { }
         for kw, value in list(kwargs.items()):
             if kw in self._fields:
                 field_init[kw] = value
                 del kwargs[kw]
+
+        # Initialize the QWidget.
         super().__init__(*args, **kwargs)
-        for kw, value in field_init.items():
-            self._fields[kw].__set__(self, value)
-        for kw in self._fields.keys():
-            # set default value
-            if kw not in self.__dict__ and self._fields[kw].default_value is not None:
-                self.__dict__[kw] = self._fields[kw].default_value
-            
-            # create slot
-            slot_name = 'set' + kw.capitalize()
-            setattr(self, slot_name, partial(self._set_field, attr_name = kw))
+
+        self.layout = qtw.QGridLayout()
+
+        # Initialize fields based on keyword arguments.
+        for field_name, value in field_init.items():
+            self._fields[field_name].__set__(self, value)
+
+        layout_row = 0
+        for field_name in self._fields.keys():
+            field = self._fields[field_name]
+
+            # Set field's default value if not initialized.
+            if field_name not in self.__dict__ and self._fields[field_name].default_value is not None:
+                self.__dict__[field_name] = self._fields[field_name].default_value
+
+            # Create slot.
+            slot_name = 'set' + field_name.capitalize()
+            setattr(self,
+                    slot_name,
+                    partial(self._set_field, attr_name = field_name))
+
+            # Create field label and widget.
+            label = qtw.QLabel(field_name)
+            widget = GenericEdit(parent = self)
+
+            # save widget?
+            #self._fields[field_name].widget = widget
+
+            # Set initial widget contents.
+            widget.setText(str(getattr(self, field_name)))
+
+            # Connect field changed signal to widget set slot.
+            getattr(self, field.signal_name).connect(widget.setText)
+
+            # Connect widget changed signal to our slot
+            widget.textEdited.connect(getattr(self, slot_name))
+
+            # Add label and widget to layout.
+            self.layout.addWidget(label, layout_row, 0)
+            self.layout.addWidget(widget, layout_row, 1)
+            layout_row += 1
+
+        self.setLayout(self.layout)
 
     def _set_field(self, value, attr_name):
         self._fields[attr_name].__set__(self, value)
-
-if __name__ == '__main__':
-    class Resistor(QDataWidget):
-        ref = QDataField(str)
-        resistance = QDataField(float)
-        tolerance = QDataField(float, default_value = 0.05)
-        kind = QDataField(str, default_value = 'metal film')
-
-    class Subscriber(qtc.QObject):
-        def __init__(self, sname, *args, **kwargs):
-            self.sname = sname
-            super().__init__(*args, **kwargs)
-
-        #@qtc.Slot(int)
-        def print_value(self, value):
-            print(f'{self.sname} signalled, type {type(value)}, value {value}')
-
-    # pass in kw arg parent to make sure it gets through to QObject
-    r1 = Resistor(ref = 'r1', resistance = 300.0, parent = None)
-
-    # override default for kind
-    r2 = Resistor(ref = 'r2', resistance = 100.0, kind = 'carbon comp')
-
-    # make sure default values work correctly
-    print(f'{r1.kind=}, should be metal film (default)')
-    print(f'{r2.kind=}, should be carbon comp')
-
-    # create some subscribers with normal (not dynamically created) slots
-    subscriberR1 = Subscriber('r1')
-    subscriberR2 = Subscriber('r2')
-
-    # hook up automatically generated signals to the subscriber instances
-    r1.refChanged.connect(subscriberR1.print_value)
-    r1.resistanceChanged.connect(subscriberR1.print_value)
-    r1.toleranceChanged.connect(subscriberR1.print_value)
-    r1.kindChanged.connect(subscriberR1.print_value)
-
-    r2.refChanged.connect(subscriberR2.print_value)
-    r2.resistanceChanged.connect(subscriberR2.print_value)
-    r2.toleranceChanged.connect(subscriberR2.print_value)
-    r2.kindChanged.connect(subscriberR2.print_value)
-
-    # test that setting attributes directly sends signals
-    r1.resistance = 37.2
-    r2.tolerance = 0.10
-
-    # test that directly calling the dynamically generated slots sends signls
-    r1.setResistance(99.99)
-    r2.setTolerance(0.01)
-
-    # test that the generated singals work with the generated
-    # slots by linking some r1 and r2 fields together
-    r1.resistanceChanged.connect(r2.setResistance)
-    r2.kindChanged.connect(r1.setKind)
-    r1.setResistance(33.3)
-    r2.setKind('foo')
