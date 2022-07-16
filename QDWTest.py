@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# Copyright 2022 Eric Smith <spacewar@gmail.com>
+# SPDX-License-Identifier: MIT
 
 import sys
 
